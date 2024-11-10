@@ -1,0 +1,100 @@
+import cv2
+import numpy as np
+import tflite_runtime.interpreter as tflite
+
+# Path to the TensorFlow Lite model
+MODEL_PATH = "/home/pi/Desktop/apple_quality_model.tflite"
+
+# Load the TensorFlow Lite model
+interpreter = tflite.Interpreter(model_path=MODEL_PATH)
+interpreter.allocate_tensors()
+
+# Get input and output tensor details
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+# Get input shape from the model
+input_shape = input_details[0]['shape']
+IMG_HEIGHT = input_shape[1]
+IMG_WIDTH = input_shape[2]
+
+# Class labels for the two categories
+class_labels = ['Bad Quality', 'Good Quality']
+
+# Preprocess the image for the model (resize and normalize)
+def preprocess_image(image):
+    resized_image = cv2.resize(image, (IMG_WIDTH, IMG_HEIGHT))
+    normalized_image = resized_image / 255.0
+    preprocessed_image = np.expand_dims(normalized_image, axis=0).astype(np.float32)
+    return preprocessed_image
+
+# Detect apples in the frame using color segmentation (red color)
+def detect_apples(frame):
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    
+    # Define color ranges for detecting red apples (adjust if necessary)
+    lower_red1 = np.array([0, 120, 70])
+    upper_red1 = np.array([10, 255, 255])
+    lower_red2 = np.array([170, 120, 70])
+    upper_red2 = np.array([180, 255, 255])
+    
+    # Create masks for red color
+    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+    mask = mask1 + mask2
+    
+    # Apply Gaussian blur to reduce noise
+    blurred = cv2.GaussianBlur(mask, (15, 15), 0)
+    
+    # Find contours in the mask
+    contours, _ = cv2.findContours(blurred, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    
+    apple_regions = []
+    
+    for contour in contours:
+        if cv2.contourArea(contour) > 500:  # Adjust area threshold
+            x, y, w, h = cv2.boundingRect(contour)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            apple_region = frame[y:y+h, x:x+w]
+            apple_regions.append((apple_region, (x, y, w, h)))
+    
+    return apple_regions
+
+# Open the webcam feed
+cap = cv2.VideoCapture(0)
+
+if not cap.isOpened():
+    print("Error: Could not open webcam.")
+    exit()
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        print("Failed to grab frame.")
+        break
+
+    # Detect apples in the frame
+    apple_regions = detect_apples(frame)
+
+    # Process each detected apple
+    for apple_region, bbox in apple_regions:
+        preprocessed = preprocess_image(apple_region)
+        interpreter.set_tensor(input_details[0]['index'], preprocessed)
+        interpreter.invoke()
+        prediction = interpreter.get_tensor(output_details[0]['index'])
+        predicted_class = np.argmax(prediction)
+        label = class_labels[predicted_class]
+
+        x, y, w, h = bbox
+        cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2, cv2.LINE_AA)
+
+    # Display the resulting frame
+    cv2.imshow('Apple Quality Classification', frame)
+
+    # Exit on pressing 'q'
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# Release the webcam and close windows
+cap.release()
+cv2.destroyAllWindows()
